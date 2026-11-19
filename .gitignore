@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Node / UI build
+node_modules/
+agent/ui/dist/
+
+# Per-user runtime data (each user generates their own)
+agent/workspace/
+agent/cache/
+agent/profiles/
+
+# Generated output
+Output/
+
+# Local Claude / editor settings
+.claude/settings.local.json
+.vscode/
+.idea/
+
+# Excel lock/temp files
+~$*
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
