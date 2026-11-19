@@ -44,13 +44,13 @@ CONFIG_FILE = WORK / "config.json"
 
 # slot -> (label, mandatory, multiple files)
 SLOTS = {
-    "workshop": ("Fit-to-Standard workshop notes / minutes / MoM", True, True),
+    "workshop": ("Fit-to-Standard workshop notes / minutes / MoM", False, True),
     "kdd": ("KDD register", True, True),
-    "gap": ("Gap / WRICEF list", True, True),
+    "gap": ("Gap / WRICEF list", False, True),
     "trace": ("Requirements traceability matrix", False, True),
     "l4": ("L4 plan", True, False),
-    "bpd": ("BPD", True, True),
-    "backlog": ("Product backlog", True, True),
+    "bpd": ("BPD", False, True),
+    "backlog": ("Product backlog", False, True),
     "other": ("Any other input", False, True),
     "template": ("Output template", False, False),
 }
@@ -275,4 +275,7 @@ def reset_workspace():
 
 if __name__ == "__main__":
     reset_workspace()
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
+    import os
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", 8000))
+    print(f"User Story Agent running at http://127.0.0.1:{port}  (Ctrl+C to stop)")
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

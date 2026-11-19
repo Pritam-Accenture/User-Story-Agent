@@ -46,7 +46,7 @@ function Slot({ slot, info, accept, onChange, setError, hint }) {
           {info.label}{info.mandatory ? ' *' : ' (optional)'}
         </Button>
         {busy && <BusyIndicator active size="S" />}
-        {!has && !busy && <Text style={grey}>{hint || 'Any format: Word, PowerPoint, PDF, Excel, CSV, text'}</Text>}
+        {!has && !busy && <Text style={grey}>{hint}</Text>}
       </FlexBox>
       {info.files.map((f) => (
         <FlexBox key={f.name} alignItems="Center" style={{ gap: '0.5rem', marginLeft: '0.5rem' }}>

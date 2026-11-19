@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-multipart
+openpyxl
+python-docx
+python-pptx
+pypdf
+playwright
+claude-agent-sdk
