@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 
 import build_plan
 import llm
+import scope_detect
 
 app = FastAPI(title="User Story Agent")
 JOB = {"state": "idle", "message": "", "result": None}
@@ -54,7 +55,7 @@ SLOTS = {
     "other": ("Any other input", False, True),
     "template": ("Output template", False, False),
 }
-DEFAULT_CONFIG = dict(scope_text="", countries=[], free_text="", output_mode="default")
+DEFAULT_CONFIG = dict(scope_added=[], scope_excluded=[], country_added=[], country_excluded=[], free_text="", output_mode="default", model="")
 
 
 def read_json(p, default=None):
@@ -92,6 +93,68 @@ def claude_cached(force=False):
     return _claude["v"]
 
 
+_models = {"list": [], "loading": False, "t": 0.0}
+
+
+def models_cached():
+    """Load the user's available models in the background (starting the CLI takes several seconds)."""
+    if not claude_cached()["loggedIn"]:
+        _models["list"] = []
+    elif (not _models["list"] and time.time() - _models["t"] > 20 or time.time() - _models["t"] > 600) and not _models["loading"]:
+        def work():
+            try:
+                _models["list"] = llm.models() or _models["list"]
+            finally:
+                _models.update(loading=False, t=time.time())
+        _models["loading"] = True
+        threading.Thread(target=work, daemon=True).start()
+    ms = _models["list"]
+    return dict(list=ms, best=llm.strongest(ms), loading=_models["loading"])
+
+
+_det = {"sig": None, "items": [], "countries": [], "loading": False}
+
+
+def _files_sig():
+    return tuple((k, p.name, p.stat().st_size, int(p.stat().st_mtime)) for k in SLOTS if k != "template" for p in slot_files(k))
+
+
+def detect_cached():
+    """Scope items found in the uploaded files. Re-runs in the background whenever the uploads change."""
+    sig = _files_sig()
+    if sig != _det["sig"] and not _det["loading"]:
+        _det["loading"] = True
+
+        def work():
+            try:
+                r = scope_detect.detect({k: slot_files(k) for k in SLOTS}, REF / "SSCUI_List.xlsm", CACHE, REF / "countries.json") if sig else {}
+            except Exception:
+                r = {}
+            _det.update(items=r.get("scope", []), countries=r.get("countries", []), sig=sig, loading=False)
+        threading.Thread(target=work, daemon=True).start()
+    return dict(items=_det["items"], countries=_det["countries"], loading=_det["loading"] or sig != _det["sig"])
+
+
+def effective_ids(cfg):
+    """Detected scope item IDs the user has not deselected + IDs the user added."""
+    off = set(cfg.get("scope_excluded") or [])
+    return list(dict.fromkeys([d["id"] for d in _det["items"] if d["id"] not in off] + list(cfg.get("scope_added") or [])))
+
+
+def effective_countries(cfg):
+    off = set(cfg.get("country_excluded") or [])
+    return list(dict.fromkeys([d["code"] for d in _det["countries"] if d["code"] not in off] + list(cfg.get("country_added") or [])))
+
+
+_known = {"v": None}
+
+
+def known_scope():
+    if _known["v"] is None:
+        _known["v"] = scope_detect.all_known(REF / "SSCUI_List.xlsm", CACHE)
+    return _known["v"]
+
+
 def extract_status():
     st = read_json(CACHE / "extract_status.json", {"state": "never", "message": ""})
     p = EXTRACT_PROC["p"]
@@ -104,7 +167,7 @@ def extract_status():
 @app.get("/api/state")
 def state():
     cfg = config()
-    return dict(config=cfg, scope_ids=parse_ids(cfg["scope_text"]), files=files_info(), claude=claude_cached(), extract=extract_status(),
+    return dict(config=cfg, scope_ids=effective_ids(cfg), country_ids=effective_countries(cfg), known_scope=known_scope(), detected=detect_cached(), files=files_info(), claude=claude_cached(), models=models_cached(), extract=extract_status(),
                 job=JOB, countries=read_json(REF / "countries.json", []))
 
 
@@ -193,13 +256,13 @@ def refresh():
     if p and p.poll() is None:
         raise HTTPException(409, "An extract is already running.")
     cfg = config()
-    ids = parse_ids(cfg["scope_text"])
+    ids = effective_ids(cfg)
     if not ids:
-        raise HTTPException(400, "Enter scope item IDs first (the refresh covers the IDs you entered).")
+        raise HTTPException(400, "Select or enter scope item IDs first (the refresh covers the IDs you entered).")
     idf = WORK / "extract_ids.json"
     idf.write_text(json.dumps(ids))
     cmd = [sys.executable, "-I", str(HERE / "extract_process_navigator.py"), "--ids-file", str(idf),
-           "--countries", ",".join(cfg["countries"] or ["US"]), "--force"]
+           "--countries", ",".join(effective_countries(cfg) or ["US"]), "--force"]
     EXTRACT_PROC["p"] = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     (CACHE / "extract_status.json").write_text(json.dumps(dict(state="waiting_login", message="Starting - an Edge window will open for SAP sign-in.", done=0, total=len(ids))))
     return dict(started=True, scope_items=len(ids))
@@ -221,21 +284,29 @@ def run_job(cfg_run):
 def generate(payload: dict | None = None):
     payload = payload or {}
     cfg = config()
-    ids = parse_ids(cfg["scope_text"])
+    ids = effective_ids(cfg)
     problems = []
+    if detect_cached()["loading"]:
+        raise HTTPException(400, "Still detecting scope items in your files - try again in a moment.")
     if not ids:
         problems.append("scope item IDs")
-    if not cfg["countries"]:
+    countries = effective_countries(cfg)
+    if not countries:
         problems.append("at least one country")
     problems += [v[0] for k, v in SLOTS.items() if v[1] and not slot_files(k)]
     if cfg["output_mode"] == "template" and not slot_files("template"):
         problems.append("output template (or choose the sample format)")
     if problems:
         raise HTTPException(400, "Still needed: " + "; ".join(problems))
+    ms = models_cached()
+    chosen = cfg.get("model") or ""
+    model = chosen if chosen in [m["value"] for m in ms["list"]] else ms["best"]   # blank = strongest available
+    if model == "default":
+        model = None
     tmpl = slot_files("template")[0] if cfg["output_mode"] == "template" else None
     ext = tmpl.suffix if tmpl else ".xlsx"
     name = f"SAP_S4HANA_Public_Cloud_L4_Plan_and_User_Stories_{dt.datetime.now():%Y%m%d_%H%M%S}{ext}"
-    run = dict(scope_ids=ids, countries=cfg["countries"], free_text=cfg["free_text"], use_llm=payload.get("use_claude", True), model=None,
+    run = dict(scope_ids=ids, countries=countries, free_text=cfg["free_text"], use_llm=payload.get("use_claude", True), model=model,
                files={k: [str(p) for p in slot_files(k)] for k in SLOTS if k != "template"},
                l4=str(slot_files("l4")[0]), sscui=str(REF / "SSCUI_List.xlsm"), out=str(OUT / name),
                output=dict(mode="template", template=str(tmpl)) if tmpl else dict(mode="default"))

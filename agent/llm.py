@@ -32,6 +32,29 @@ def status() -> dict:
         return {"loggedIn": False, "detail": f"Could not check Claude login: {e}"}
 
 
+async def _models() -> list:
+    from claude_agent_sdk import ClaudeSDKClient
+    async with ClaudeSDKClient(ClaudeAgentOptions(tools=[], allowed_tools=[], setting_sources=[])) as c:
+        info = await c.get_server_info() or {}
+    return [dict(value=m["value"], label=m.get("displayName") or m["value"]) for m in info.get("models", []) if m.get("value")]
+
+
+def models(timeout: int = 60) -> list:
+    """Models offered to the signed-in user's own Claude login: [{'value', 'label'}] (empty if unavailable)."""
+    try:
+        return asyncio.run(asyncio.wait_for(_models(), timeout))
+    except Exception:
+        return []
+
+
+def strongest(ms: list) -> str | None:
+    """Best choice for quality: the 'opus' alias (always the latest Opus), else the first Opus, else None (= account default)."""
+    vals = [m["value"] for m in ms]
+    if "opus" in vals:
+        return "opus"
+    return next((v for v in vals if "opus" in v), None)
+
+
 def login() -> None:
     """Start the browser sign-in flow (returns immediately; the user completes it in the browser)."""
     if CLI is None:
